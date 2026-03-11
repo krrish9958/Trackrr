@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "893804085902",
+    "project_id": "trackrr-acc27",
+    "storage_bucket": "trackrr-acc27.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:893804085902:android:dfd50d56ed984513763fdf",
+        "android_client_info": {
+          "package_name": "com.example.parcel_tracking_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCysoDwHaopizU1dJK5G39HjSL0fOPwb1w"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
