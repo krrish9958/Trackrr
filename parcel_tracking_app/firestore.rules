@@ -1,0 +1,152 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    match /users/{userId} {
+      allow read, write: if false;
+
+      match /shipments/{shipmentId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && validShipmentCreate();
+        allow update: if isOwner(userId) && validShipmentUpdate();
+        allow delete: if isOwner(userId) && resource.data.isArchived == true;
+
+        match /events/{eventId} {
+          allow read: if isOwner(userId);
+          allow create: if isOwner(userId) && validEvent(userId, shipmentId);
+          allow update, delete: if isOwner(userId);
+        }
+
+        function validShipmentCreate() {
+          return request.resource.data.keys().hasOnly([
+              'trackingNumber',
+              'shippedAt',
+              'location',
+              'status',
+              'isArchived'
+            ])
+            && request.resource.data.trackingNumber is string
+            && request.resource.data.trackingNumber.size() > 0
+            && request.resource.data.location is string
+            && request.resource.data.location.size() > 0
+            && request.resource.data.status is string
+            && request.resource.data.shippedAt is timestamp
+            && request.resource.data.isArchived is bool
+            && request.resource.data.isArchived == false;
+        }
+
+        function validShipmentUpdate() {
+          return request.resource.data.keys().hasOnly([
+              'trackingNumber',
+              'shippedAt',
+              'location',
+              'status',
+              'isArchived',
+              'archivedAt'
+            ])
+            && request.resource.data.trackingNumber is string
+            && request.resource.data.trackingNumber.size() > 0
+            && request.resource.data.location is string
+            && request.resource.data.location.size() > 0
+            && request.resource.data.status is string
+            && request.resource.data.shippedAt is timestamp
+            && request.resource.data.shippedAt == resource.data.shippedAt
+            && request.resource.data.isArchived is bool
+            && (
+              !('archivedAt' in request.resource.data)
+              || request.resource.data.archivedAt is timestamp
+            );
+        }
+
+        function validEvent(userId, shipmentId) {
+          return request.resource.data.keys().hasOnly([
+              'userId',
+              'shipmentId',
+              'status',
+              'title',
+              'description',
+              'location',
+              'occurredAt'
+            ])
+            && request.resource.data.userId == userId
+            && request.resource.data.shipmentId == shipmentId
+            && request.resource.data.status is string
+            && request.resource.data.title is string
+            && request.resource.data.title.size() > 0
+            && request.resource.data.description is string
+            && request.resource.data.description.size() > 0
+            && request.resource.data.location is string
+            && request.resource.data.location.size() > 0
+            && request.resource.data.occurredAt is timestamp;
+        }
+      }
+
+      match /alerts/{alertId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && validAlertCreate();
+        allow update: if isOwner(userId) && validAlertUpdate();
+        allow delete: if isOwner(userId);
+
+        function validAlertCreate() {
+          return request.resource.data.keys().hasOnly([
+              'shipmentId',
+              'eventId',
+              'title',
+              'description',
+              'kind',
+              'isRead',
+              'createdAt'
+            ])
+            && (!('shipmentId' in request.resource.data)
+              || request.resource.data.shipmentId is string)
+            && request.resource.data.eventId is string
+            && request.resource.data.eventId.size() > 0
+            && request.resource.data.title is string
+            && request.resource.data.description is string
+            && request.resource.data.kind is string
+            && request.resource.data.isRead is bool
+            && request.resource.data.createdAt is timestamp;
+        }
+
+        function validAlertUpdate() {
+          return request.resource.data.keys().hasOnly([
+              'shipmentId',
+              'eventId',
+              'title',
+              'description',
+              'kind',
+              'isRead',
+              'createdAt'
+            ])
+            && (!('shipmentId' in request.resource.data)
+              || request.resource.data.shipmentId is string)
+            && request.resource.data.eventId is string
+            && request.resource.data.eventId == resource.data.eventId
+            && request.resource.data.title is string
+            && request.resource.data.description is string
+            && request.resource.data.kind is string
+            && request.resource.data.isRead is bool
+            && request.resource.data.createdAt is timestamp
+            && request.resource.data.createdAt == resource.data.createdAt;
+        }
+      }
+    }
+
+    match /{path=**}/events/{eventId} {
+      allow read: if isSignedIn()
+        && resource.data.userId is string
+        && resource.data.userId == request.auth.uid;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+  }
+}

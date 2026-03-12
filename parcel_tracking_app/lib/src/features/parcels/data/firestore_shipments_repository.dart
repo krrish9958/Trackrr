@@ -2,15 +2,28 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 
+import '../../alerts/domain/alert.dart';
 import '../domain/shipment.dart';
 import '../domain/shipment_event.dart';
 
 abstract class ShipmentsRepository {
   Stream<List<Shipment>> watchCurrentUserShipments();
+  Stream<List<Shipment>> watchArchivedShipments();
   Future<String> addShipment(Shipment shipment);
   Future<void> updateShipment({
     required Shipment previous,
     required Shipment updated,
+  });
+  Future<void> archiveShipment(String shipmentId);
+  Future<void> restoreShipment(String shipmentId);
+  Future<void> deleteShipment(String shipmentId);
+  Future<void> addShipmentEvent({
+    required Shipment shipment,
+    required ShipmentStatus status,
+    required String title,
+    required String description,
+    required String location,
+    DateTime? occurredAt,
   });
   Stream<Shipment?> watchShipment(String id);
   Stream<List<ShipmentEvent>> watchShipmentEvents(String shipmentId);
@@ -33,27 +46,35 @@ class FirestoreShipmentsRepository implements ShipmentsRepository {
       throw StateError('No user logged in.');
     }
 
-    final shipmentRef = await _firestore
+    final trackingNumber = _requireNonEmpty(
+      shipment.trackingNumber,
+      fieldName: 'trackingNumber',
+    );
+    final location = _requireNonEmpty(shipment.location, fieldName: 'location');
+    final status = _normalizeStatus(shipment.normalizedStatus);
+    final shipmentRef = _firestore
         .collection('users')
         .doc(user.uid)
         .collection('shipments')
-        .add({
-          'trackingNumber': shipment.trackingNumber,
-          'shippedAt': Timestamp.fromDate(shipment.shippedAt),
-          'location': shipment.location,
-          'status': shipment.normalizedStatus.value,
-        });
-
-    await _appendShipmentEvent(
+        .doc();
+    final event = buildShipmentEvent(
       shipmentId: shipmentRef.id,
-      event: buildShipmentEvent(
-        shipmentId: shipmentRef.id,
-        userId: user.uid,
-        status: shipment.normalizedStatus,
-        location: shipment.location,
-        occurredAt: shipment.shippedAt,
-      ),
+      userId: user.uid,
+      status: status,
+      location: location,
+      occurredAt: shipment.shippedAt,
     );
+    final batch = _firestore.batch();
+
+    batch.set(shipmentRef, {
+      'trackingNumber': trackingNumber,
+      'shippedAt': Timestamp.fromDate(shipment.shippedAt),
+      'location': location,
+      'status': status.value,
+      'isArchived': false,
+    });
+    _queueShipmentEventWrite(batch: batch, shipmentId: shipmentRef.id, event: event);
+    await batch.commit();
 
     return shipmentRef.id;
   }
@@ -64,34 +85,168 @@ class FirestoreShipmentsRepository implements ShipmentsRepository {
     required Shipment updated,
   }) async {
     final user = _auth.currentUser;
-    if (user == null || updated.id.isEmpty) return;
+    if (user == null || updated.id.isEmpty) {
+      throw StateError('No user logged in.');
+    }
+
+    final trackingNumber = _requireNonEmpty(
+      updated.trackingNumber,
+      fieldName: 'trackingNumber',
+    );
+    final location = _requireNonEmpty(updated.location, fieldName: 'location');
+    final status = _normalizeStatus(updated.normalizedStatus);
+    final shipmentRef = _firestore
+        .collection('users')
+        .doc(user.uid)
+        .collection('shipments')
+        .doc(updated.id);
+
+    final batch = _firestore.batch();
+
+    batch.update(shipmentRef, {
+      'trackingNumber': trackingNumber,
+      'location': location,
+      'status': status.value,
+    });
+
+    final didStatusChange = previous.normalizedStatus != status;
+    final didLocationChange = previous.location.trim() != location;
+
+    if (didStatusChange || didLocationChange) {
+      _queueShipmentEventWrite(
+        batch: batch,
+        shipmentId: updated.id,
+        event: buildShipmentEvent(
+          shipmentId: updated.id,
+          userId: user.uid,
+          status: status,
+          location: location,
+          occurredAt: DateTime.now(),
+        ),
+      );
+    }
+
+    await batch.commit();
+  }
+
+  @override
+  Future<void> deleteShipment(String shipmentId) async {
+    final user = _auth.currentUser;
+    if (user == null || shipmentId.isEmpty) {
+      throw StateError('No user logged in.');
+    }
+
+    final shipmentRef = _firestore
+        .collection('users')
+        .doc(user.uid)
+        .collection('shipments')
+        .doc(shipmentId);
+
+    final eventsSnapshot = await shipmentRef.collection('events').get();
+    final alertsSnapshot = await _firestore
+        .collection('users')
+        .doc(user.uid)
+        .collection('alerts')
+        .where('shipmentId', isEqualTo: shipmentId)
+        .get();
+    final batch = _firestore.batch();
+
+    for (final eventDoc in eventsSnapshot.docs) {
+      batch.delete(eventDoc.reference);
+    }
+    for (final alertDoc in alertsSnapshot.docs) {
+      batch.delete(alertDoc.reference);
+    }
+
+    batch.delete(shipmentRef);
+    await batch.commit();
+  }
+
+  @override
+  Future<void> archiveShipment(String shipmentId) async {
+    final user = _auth.currentUser;
+    if (user == null || shipmentId.isEmpty) {
+      throw StateError('No user logged in.');
+    }
 
     await _firestore
         .collection('users')
         .doc(user.uid)
         .collection('shipments')
-        .doc(updated.id)
+        .doc(shipmentId)
         .update({
-          'trackingNumber': updated.trackingNumber,
-          'location': updated.location,
-          'status': updated.normalizedStatus.value,
+          'isArchived': true,
+          'archivedAt': Timestamp.now(),
         });
+  }
 
-    final didStatusChange = previous.normalizedStatus != updated.normalizedStatus;
-    final didLocationChange = previous.location.trim() != updated.location.trim();
-
-    if (didStatusChange || didLocationChange) {
-      await _appendShipmentEvent(
-        shipmentId: updated.id,
-        event: buildShipmentEvent(
-          shipmentId: updated.id,
-          userId: user.uid,
-          status: updated.normalizedStatus,
-          location: updated.location,
-          occurredAt: DateTime.now(),
-        ),
-      );
+  @override
+  Future<void> restoreShipment(String shipmentId) async {
+    final user = _auth.currentUser;
+    if (user == null || shipmentId.isEmpty) {
+      throw StateError('No user logged in.');
     }
+
+    await _firestore
+        .collection('users')
+        .doc(user.uid)
+        .collection('shipments')
+        .doc(shipmentId)
+        .update({
+          'isArchived': false,
+          'archivedAt': FieldValue.delete(),
+        });
+  }
+
+  @override
+  Future<void> addShipmentEvent({
+    required Shipment shipment,
+    required ShipmentStatus status,
+    required String title,
+    required String description,
+    required String location,
+    DateTime? occurredAt,
+  }) async {
+    final user = _auth.currentUser;
+    if (user == null || shipment.id.isEmpty) {
+      throw StateError('No user logged in.');
+    }
+
+    final normalizedStatus = _normalizeStatus(status);
+    final normalizedTitle = _requireNonEmpty(title, fieldName: 'title');
+    final normalizedDescription = _requireNonEmpty(
+      description,
+      fieldName: 'description',
+    );
+    final normalizedLocation = _requireNonEmpty(location, fieldName: 'location');
+
+    final shipmentRef = _firestore
+        .collection('users')
+        .doc(user.uid)
+        .collection('shipments')
+        .doc(shipment.id);
+
+    final batch = _firestore.batch();
+    batch.update(shipmentRef, {
+      'location': normalizedLocation,
+      'status': normalizedStatus.value,
+    });
+
+    _queueShipmentEventWrite(
+      batch: batch,
+      shipmentId: shipment.id,
+      event: ShipmentEvent(
+        id: '',
+        shipmentId: shipment.id,
+        userId: user.uid,
+        status: normalizedStatus,
+        title: normalizedTitle,
+        description: normalizedDescription,
+        location: normalizedLocation,
+        occurredAt: occurredAt ?? DateTime.now(),
+      ),
+    );
+    await batch.commit();
   }
 
   @override
@@ -99,13 +254,14 @@ class FirestoreShipmentsRepository implements ShipmentsRepository {
     final user = _auth.currentUser;
     if (user == null) {
       debugPrint('FirestoreShipmentsRepository: No user logged in.');
-      return const Stream<List<Shipment>>.empty();
+      return Stream.value(const <Shipment>[]);
     }
 
     final ref = _firestore
         .collection('users')
         .doc(user.uid)
         .collection('shipments')
+        .where('isArchived', isEqualTo: false)
         .orderBy('shippedAt', descending: true);
 
     return ref
@@ -114,6 +270,31 @@ class FirestoreShipmentsRepository implements ShipmentsRepository {
         .handleError((error) {
           debugPrint(
             'FirestoreShipmentsRepository: Error fetching shipments: $error',
+          );
+        });
+  }
+
+  @override
+  Stream<List<Shipment>> watchArchivedShipments() {
+    final user = _auth.currentUser;
+    if (user == null) {
+      debugPrint('FirestoreShipmentsRepository: No user logged in.');
+      return Stream.value(const <Shipment>[]);
+    }
+
+    final ref = _firestore
+        .collection('users')
+        .doc(user.uid)
+        .collection('shipments')
+        .where('isArchived', isEqualTo: true)
+        .orderBy('shippedAt', descending: true);
+
+    return ref
+        .snapshots()
+        .map((snapshot) => snapshot.docs.map(_fromDoc).toList())
+        .handleError((error) {
+          debugPrint(
+            'FirestoreShipmentsRepository: Error fetching archived shipments: $error',
           );
         });
   }
@@ -168,24 +349,41 @@ class FirestoreShipmentsRepository implements ShipmentsRepository {
     );
   }
 
-  Future<void> _appendShipmentEvent({
+  void _queueShipmentEventWrite({
+    required WriteBatch batch,
     required String shipmentId,
     required ShipmentEvent event,
-  }) async {
-    await _firestore
+  }) {
+    final eventRef = _firestore
         .collection('users')
         .doc(event.userId)
         .collection('shipments')
         .doc(shipmentId)
         .collection('events')
-        .add({
-          'userId': event.userId,
+        .doc();
+    final alertRef = _firestore
+        .collection('users')
+        .doc(event.userId)
+        .collection('alerts')
+        .doc(eventRef.id);
+
+    batch.set(eventRef, {
+      'userId': event.userId,
+      'shipmentId': event.shipmentId,
+      'status': event.status.value,
+      'title': event.title,
+      'description': event.description,
+      'location': event.location,
+      'occurredAt': Timestamp.fromDate(event.occurredAt),
+    });
+    batch.set(alertRef, {
           'shipmentId': event.shipmentId,
-          'status': event.status.value,
+          'eventId': eventRef.id,
           'title': event.title,
           'description': event.description,
-          'location': event.location,
-          'occurredAt': Timestamp.fromDate(event.occurredAt),
+          'kind': _alertKindFor(event.status).name,
+          'isRead': false,
+          'createdAt': Timestamp.fromDate(event.occurredAt),
         });
   }
 
@@ -197,6 +395,7 @@ class FirestoreShipmentsRepository implements ShipmentsRepository {
       shippedAt: _parseDate(data['shippedAt']),
       location: (data['location'] as String?) ?? '',
       status: (data['status'] as String?) ?? ShipmentStatus.pending.value,
+      isArchived: (data['isArchived'] as bool?) ?? false,
     );
   }
 
@@ -208,6 +407,7 @@ class FirestoreShipmentsRepository implements ShipmentsRepository {
       shippedAt: _parseDate(data['shippedAt']),
       location: (data['location'] as String?) ?? '',
       status: (data['status'] as String?) ?? ShipmentStatus.pending.value,
+      isArchived: (data['isArchived'] as bool?) ?? false,
     );
   }
 
@@ -232,9 +432,37 @@ class FirestoreShipmentsRepository implements ShipmentsRepository {
     if (value is Timestamp) {
       return value.toDate();
     }
+    if (value is DateTime) {
+      return value;
+    }
+    if (value is int) {
+      return DateTime.fromMillisecondsSinceEpoch(value);
+    }
     if (value is String) {
       return DateTime.tryParse(value) ?? DateTime.now();
     }
     return DateTime.now();
   }
+}
+
+String _requireNonEmpty(String value, {required String fieldName}) {
+  final trimmed = value.trim();
+  if (trimmed.isEmpty) {
+    throw ArgumentError.value(value, fieldName, 'must not be empty');
+  }
+  return trimmed;
+}
+
+ShipmentStatus _normalizeStatus(ShipmentStatus status) {
+  return status == ShipmentStatus.unknown ? ShipmentStatus.pending : status;
+}
+
+AlertKind _alertKindFor(ShipmentStatus status) {
+  return switch (status) {
+    ShipmentStatus.complete => AlertKind.success,
+    ShipmentStatus.inDelivery => AlertKind.info,
+    ShipmentStatus.pending => AlertKind.info,
+    ShipmentStatus.failed => AlertKind.error,
+    ShipmentStatus.unknown => AlertKind.warning,
+  };
 }

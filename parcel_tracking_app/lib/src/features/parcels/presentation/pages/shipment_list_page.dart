@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
+import '../../../../core/app_scope.dart';
 import '../../data/firestore_shipments_repository.dart';
 import '../../domain/shipment.dart';
 
@@ -13,12 +14,22 @@ class ShipmentListPage extends StatefulWidget {
 }
 
 class _ShipmentListPageState extends State<ShipmentListPage> {
+  final TextEditingController _searchController = TextEditingController();
+
   ShipmentFilter _selectedFilter = ShipmentFilter.all;
+  ShipmentSort _selectedSort = ShipmentSort.newestFirst;
+  String _searchQuery = '';
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final isWide = MediaQuery.of(context).size.width > 600;
-    final repository = FirestoreShipmentsRepository();
+    final ShipmentsRepository repository = AppScope.of(context).shipmentsRepository;
 
     return Scaffold(
       backgroundColor: const Color(0xFFF5F5F7),
@@ -41,14 +52,36 @@ class _ShipmentListPageState extends State<ShipmentListPage> {
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  const CircleAvatar(
-                    radius: 18,
-                    backgroundColor: Colors.white,
-                    child: Icon(Icons.more_horiz, color: Colors.black87),
+                  TextButton.icon(
+                    onPressed: () => context.push('/shipments/archived'),
+                    icon: const Icon(Icons.archive_outlined),
+                    label: const Text('Archived'),
                   ),
                 ],
               ),
             ),
+            _SearchAndSortBar(
+              controller: _searchController,
+              selectedSort: _selectedSort,
+              onSearchChanged: (value) {
+                setState(() {
+                  _searchQuery = value.trim();
+                });
+              },
+              onClearSearch: () {
+                _searchController.clear();
+                setState(() {
+                  _searchQuery = '';
+                });
+              },
+              onSortChanged: (value) {
+                if (value == null) return;
+                setState(() {
+                  _selectedSort = value;
+                });
+              },
+            ),
+            const SizedBox(height: 12),
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -68,18 +101,18 @@ class _ShipmentListPageState extends State<ShipmentListPage> {
                     .toList(),
               ),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 12),
             Expanded(
               child: Center(
                 child: ConstrainedBox(
                   constraints: BoxConstraints(
-                    maxWidth: isWide ? 480 : double.infinity,
+                    maxWidth: isWide ? 560 : double.infinity,
                   ),
                   child: StreamBuilder<List<Shipment>>(
                     stream: repository.watchCurrentUserShipments(),
                     builder: (context, snapshot) {
                       if (snapshot.connectionState == ConnectionState.waiting) {
-                        return const Center(child: CircularProgressIndicator());
+                        return const _ShipmentLoadingFallback();
                       }
 
                       if (snapshot.hasError) {
@@ -87,62 +120,68 @@ class _ShipmentListPageState extends State<ShipmentListPage> {
                           'ShipmentListPage: StreamBuilder error: ${snapshot.error}',
                         );
                         return Center(
-                          child: Text(
-                            'Failed to load shipments. Please try again later.',
-                            style: Theme.of(context).textTheme.bodyMedium,
-                            textAlign: TextAlign.center,
+                          child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Text(
+                              'Failed to load shipments. Please try again later.',
+                              style: Theme.of(context).textTheme.bodyMedium,
+                              textAlign: TextAlign.center,
+                            ),
                           ),
                         );
                       }
 
                       final shipments = snapshot.data ?? const <Shipment>[];
-                      final filteredShipments = shipments
-                          .where(
-                            (shipment) =>
-                                _selectedFilter.matches(shipment.normalizedStatus),
-                          )
-                          .toList();
+                      final visibleShipments = _applyFilters(shipments);
 
-                      if (filteredShipments.isEmpty) {
-                        final message = shipments.isEmpty
-                            ? 'No shipments yet.'
-                            : 'No ${_selectedFilter.label.toLowerCase()} shipments found.';
-                        return Center(
-                          child: Text(
-                            message,
-                            style: Theme.of(context).textTheme.bodyMedium,
+                      return Column(
+                        children: [
+                          _ResultsSummary(
+                            totalCount: shipments.length,
+                            visibleCount: visibleShipments.length,
+                            selectedFilter: _selectedFilter,
+                            selectedSort: _selectedSort,
+                            searchQuery: _searchQuery,
                           ),
-                        );
-                      }
+                          Expanded(
+                            child: visibleShipments.isEmpty
+                                ? _EmptyResultsState(
+                                    hasAnyShipments: shipments.isNotEmpty,
+                                    selectedFilter: _selectedFilter,
+                                    searchQuery: _searchQuery,
+                                  )
+                                : ListView.separated(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 16,
+                                      vertical: 8,
+                                    ),
+                                    itemCount: visibleShipments.length,
+                                    separatorBuilder: (_, __) =>
+                                        const SizedBox(height: 12),
+                                    itemBuilder: (context, index) {
+                                      final shipment = visibleShipments[index];
+                                      final statusStyle = _statusStyleFor(
+                                        shipment.normalizedStatus,
+                                        context,
+                                      );
+                                      final dateLabel = DateFormat(
+                                        'dd MMM yyyy',
+                                      ).format(shipment.shippedAt);
 
-                      return ListView.separated(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 8,
-                        ),
-                        itemCount: filteredShipments.length,
-                        separatorBuilder: (_, __) => const SizedBox(height: 12),
-                        itemBuilder: (context, index) {
-                          final shipment = filteredShipments[index];
-                          final statusStyle = _statusStyleFor(
-                            shipment.normalizedStatus,
-                            context,
-                          );
-                          final dateLabel = DateFormat(
-                            'dd MMM. yyyy',
-                          ).format(shipment.shippedAt);
-
-                          return _ShipmentCard(
-                            id: shipment.id,
-                            idNumber: shipment.id,
-                            trackingNumber: shipment.trackingNumber,
-                            dateShipped: dateLabel,
-                            location: shipment.location,
-                            statusLabel: statusStyle.label,
-                            statusColor: statusStyle.color,
-                            dark: index == 0,
-                          );
-                        },
+                                      return _ShipmentCard(
+                                        id: shipment.id,
+                                        idNumber: shipment.id,
+                                        trackingNumber: shipment.trackingNumber,
+                                        dateShipped: dateLabel,
+                                        location: shipment.location,
+                                        statusLabel: statusStyle.label,
+                                        statusColor: statusStyle.color,
+                                        dark: index == 0,
+                                      );
+                                    },
+                                  ),
+                          ),
+                        ],
                       );
                     },
                   ),
@@ -201,6 +240,24 @@ class _ShipmentListPageState extends State<ShipmentListPage> {
       ),
     );
   }
+
+  List<Shipment> _applyFilters(List<Shipment> shipments) {
+    final normalizedQuery = _searchQuery.toLowerCase();
+
+    final filteredShipments = shipments.where((shipment) {
+      final matchesStatus = _selectedFilter.matches(shipment.normalizedStatus);
+      final matchesQuery =
+          normalizedQuery.isEmpty ||
+          shipment.trackingNumber.toLowerCase().contains(normalizedQuery) ||
+          shipment.location.toLowerCase().contains(normalizedQuery) ||
+          shipment.id.toLowerCase().contains(normalizedQuery);
+
+      return matchesStatus && matchesQuery;
+    }).toList();
+
+    filteredShipments.sort(_selectedSort.compare);
+    return filteredShipments;
+  }
 }
 
 enum ShipmentFilter {
@@ -226,6 +283,232 @@ enum ShipmentFilter {
       ShipmentFilter.pending => status == ShipmentStatus.pending,
       ShipmentFilter.failed => status == ShipmentStatus.failed,
     };
+  }
+}
+
+enum ShipmentSort {
+  newestFirst('Newest'),
+  oldestFirst('Oldest'),
+  trackingNumber('Tracking #'),
+  location('Location'),
+  status('Status');
+
+  const ShipmentSort(this.label);
+
+  final String label;
+
+  int compare(Shipment a, Shipment b) {
+    return switch (this) {
+      ShipmentSort.newestFirst => b.shippedAt.compareTo(a.shippedAt),
+      ShipmentSort.oldestFirst => a.shippedAt.compareTo(b.shippedAt),
+      ShipmentSort.trackingNumber => a.trackingNumber.toLowerCase().compareTo(
+        b.trackingNumber.toLowerCase(),
+      ),
+      ShipmentSort.location =>
+        a.location.toLowerCase().compareTo(b.location.toLowerCase()),
+      ShipmentSort.status => a.normalizedStatus.label.compareTo(
+        b.normalizedStatus.label,
+      ),
+    };
+  }
+}
+
+class _SearchAndSortBar extends StatelessWidget {
+  const _SearchAndSortBar({
+    required this.controller,
+    required this.selectedSort,
+    required this.onSearchChanged,
+    required this.onClearSearch,
+    required this.onSortChanged,
+  });
+
+  final TextEditingController controller;
+  final ShipmentSort selectedSort;
+  final ValueChanged<String> onSearchChanged;
+  final VoidCallback onClearSearch;
+  final ValueChanged<ShipmentSort?> onSortChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Column(
+        children: [
+          TextField(
+            controller: controller,
+            onChanged: onSearchChanged,
+            decoration: InputDecoration(
+              filled: true,
+              fillColor: Colors.white,
+              hintText: 'Search by tracking number, location, or ID',
+              prefixIcon: const Icon(Icons.search),
+              suffixIcon: controller.text.isEmpty
+                  ? null
+                  : IconButton(
+                      onPressed: onClearSearch,
+                      icon: const Icon(Icons.close),
+                    ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Text(
+                  'Sort by',
+                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                DropdownButton<ShipmentSort>(
+                  value: selectedSort,
+                  underline: const SizedBox.shrink(),
+                  borderRadius: BorderRadius.circular(16),
+                  items: ShipmentSort.values
+                      .map(
+                        (sort) => DropdownMenuItem(
+                          value: sort,
+                          child: Text(sort.label),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: onSortChanged,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ResultsSummary extends StatelessWidget {
+  const _ResultsSummary({
+    required this.totalCount,
+    required this.visibleCount,
+    required this.selectedFilter,
+    required this.selectedSort,
+    required this.searchQuery,
+  });
+
+  final int totalCount;
+  final int visibleCount;
+  final ShipmentFilter selectedFilter;
+  final ShipmentSort selectedSort;
+  final String searchQuery;
+
+  @override
+  Widget build(BuildContext context) {
+    final summaryParts = <String>[
+      '$visibleCount result${visibleCount == 1 ? '' : 's'}',
+      if (selectedFilter != ShipmentFilter.all) selectedFilter.label,
+      'sorted by ${selectedSort.label.toLowerCase()}',
+      if (searchQuery.isNotEmpty) 'for "$searchQuery"',
+    ];
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              summaryParts.join(' • '),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Colors.black54,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+          if (totalCount > 0)
+            Text(
+              '$totalCount total',
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                color: Colors.black45,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmptyResultsState extends StatelessWidget {
+  const _EmptyResultsState({
+    required this.hasAnyShipments,
+    required this.selectedFilter,
+    required this.searchQuery,
+  });
+
+  final bool hasAnyShipments;
+  final ShipmentFilter selectedFilter;
+  final String searchQuery;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = hasAnyShipments ? 'No matching shipments' : 'No shipments yet';
+    final message = hasAnyShipments
+        ? _buildFilteredMessage()
+        : 'Add your first shipment to start tracking parcels.';
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 72,
+              height: 72,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(24),
+              ),
+              child: const Icon(
+                Icons.inventory_2_outlined,
+                size: 32,
+                color: Color(0xFF6B7280),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              title,
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              message,
+              style: Theme.of(context).textTheme.bodyMedium,
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _buildFilteredMessage() {
+    final fragments = <String>[];
+
+    if (selectedFilter != ShipmentFilter.all) {
+      fragments.add(selectedFilter.label.toLowerCase());
+    }
+
+    if (searchQuery.isNotEmpty) {
+      fragments.add('matching "$searchQuery"');
+    }
+
+    if (fragments.isEmpty) {
+      return 'Try updating your search or sort settings.';
+    }
+
+    return 'No shipments found ${fragments.join(' ')}. Try adjusting your filters.';
   }
 }
 
@@ -313,14 +596,16 @@ class _ShipmentCard extends StatelessWidget {
                 alignment: WrapAlignment.spaceBetween,
                 children: [
                   SizedBox(
-                    width: isCompact ? constraints.maxWidth : constraints.maxWidth - 110,
+                    width: isCompact
+                        ? constraints.maxWidth
+                        : constraints.maxWidth - 110,
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Container(
                           decoration: BoxDecoration(
                             color: dark
-                                ? Colors.white.withOpacity(0.1)
+                                ? Colors.white.withValues(alpha: 0.1)
                                 : const Color(0xFFFFF3E0),
                             shape: BoxShape.circle,
                           ),
@@ -338,18 +623,24 @@ class _ShipmentCard extends StatelessWidget {
                             children: [
                               Text(
                                 'ID Number',
-                                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                                  color: textColor.withOpacity(0.7),
-                                ),
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .labelSmall
+                                    ?.copyWith(
+                                      color: textColor.withValues(alpha: 0.7),
+                                    ),
                               ),
                               Text(
                                 idNumber,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
-                                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                  color: textColor,
-                                  fontWeight: FontWeight.bold,
-                                ),
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .titleMedium
+                                    ?.copyWith(
+                                      color: textColor,
+                                      fontWeight: FontWeight.bold,
+                                    ),
                               ),
                             ],
                           ),
@@ -363,7 +654,7 @@ class _ShipmentCard extends StatelessWidget {
                       vertical: 6,
                     ),
                     decoration: BoxDecoration(
-                      color: statusColor.withOpacity(0.15),
+                      color: statusColor.withValues(alpha: 0.15),
                       borderRadius: BorderRadius.circular(20),
                     ),
                     child: Text(
@@ -405,9 +696,7 @@ class _ShipmentCard extends StatelessWidget {
                 alignment: WrapAlignment.spaceBetween,
                 children: [
                   TextButton.icon(
-                    onPressed: () {
-                      context.push('/shipments/$id');
-                    },
+                    onPressed: () => context.push('/shipments/$id'),
                     icon: Icon(
                       Icons.navigation_outlined,
                       color: dark ? Colors.orangeAccent : const Color(0xFFFF9800),
@@ -422,9 +711,7 @@ class _ShipmentCard extends StatelessWidget {
                     ),
                   ),
                   TextButton(
-                    onPressed: () {
-                      context.push('/shipments/$id');
-                    },
+                    onPressed: () => context.push('/shipments/$id'),
                     child: Text(
                       'View Details',
                       style: TextStyle(
@@ -463,9 +750,9 @@ class _InfoColumn extends StatelessWidget {
         children: [
           Text(
             label,
-            style: Theme.of(
-              context,
-            ).textTheme.labelSmall?.copyWith(color: color.withOpacity(0.7)),
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: color.withValues(alpha: 0.7),
+            ),
           ),
           const SizedBox(height: 4),
           Text(
@@ -539,6 +826,64 @@ class _BottomNavIcon extends StatelessWidget {
               style: Theme.of(
                 context,
               ).textTheme.labelSmall?.copyWith(color: color),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ShipmentLoadingFallback extends StatefulWidget {
+  const _ShipmentLoadingFallback();
+
+  @override
+  State<_ShipmentLoadingFallback> createState() =>
+      _ShipmentLoadingFallbackState();
+}
+
+class _ShipmentLoadingFallbackState extends State<_ShipmentLoadingFallback> {
+  bool _showOfflineHint = false;
+
+  @override
+  void initState() {
+    super.initState();
+    Future<void>.delayed(const Duration(seconds: 8), () {
+      if (mounted) {
+        setState(() => _showOfflineHint = true);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_showOfflineHint) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.cloud_off_outlined,
+              size: 40,
+              color: Color(0xFF6B7280),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Still loading shipments',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'This phone may be offline or still waiting for its first sync. Connect to the internet once and reopen Parcels.',
+              style: Theme.of(context).textTheme.bodyMedium,
+              textAlign: TextAlign.center,
             ),
           ],
         ),

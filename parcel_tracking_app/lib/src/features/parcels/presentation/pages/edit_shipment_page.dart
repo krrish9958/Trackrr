@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../../core/app_scope.dart';
 import '../../data/firestore_shipments_repository.dart';
 import '../../domain/shipment.dart';
 
@@ -17,7 +18,6 @@ class _EditShipmentPageState extends State<EditShipmentPage> {
   final _formKey = GlobalKey<FormState>();
   final _trackingNumberController = TextEditingController();
   final _locationController = TextEditingController();
-  final _repository = FirestoreShipmentsRepository();
 
   Shipment? _shipment;
   ShipmentStatus _status = ShipmentStatus.pending;
@@ -46,18 +46,20 @@ class _EditShipmentPageState extends State<EditShipmentPage> {
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate() || _shipment == null) return;
 
+    final ShipmentsRepository repository = AppScope.of(context).shipmentsRepository;
+
     setState(() => _loading = true);
 
     try {
       final updatedShipment = Shipment(
-          id: _shipment!.id,
-          trackingNumber: _trackingNumberController.text.trim(),
-          shippedAt: _shipment!.shippedAt,
-          location: _locationController.text.trim(),
-          status: _status.value,
-        );
+        id: _shipment!.id,
+        trackingNumber: _trackingNumberController.text.trim(),
+        shippedAt: _shipment!.shippedAt,
+        location: _locationController.text.trim(),
+        status: _status.value,
+      );
 
-      await _repository.updateShipment(
+      await repository.updateShipment(
         previous: _shipment!,
         updated: updatedShipment,
       );
@@ -83,10 +85,12 @@ class _EditShipmentPageState extends State<EditShipmentPage> {
 
   @override
   Widget build(BuildContext context) {
+    final ShipmentsRepository repository = AppScope.of(context).shipmentsRepository;
+
     return Scaffold(
       appBar: AppBar(title: const Text('Edit Shipment')),
       body: StreamBuilder<Shipment?>(
-        stream: _repository.watchShipment(widget.shipmentId),
+        stream: repository.watchShipment(widget.shipmentId),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting && !_initialized) {
             return const Center(child: CircularProgressIndicator());
@@ -144,7 +148,7 @@ class _EditShipmentPageState extends State<EditShipmentPage> {
                   ),
                   const SizedBox(height: 20),
                   DropdownButtonFormField<ShipmentStatus>(
-                    value: _status,
+                    initialValue: _status,
                     decoration: const InputDecoration(
                       labelText: 'Status',
                       border: OutlineInputBorder(),

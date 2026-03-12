@@ -5,6 +5,7 @@ class AlertItem {
   final DateTime createdAt;
   final String? shipmentId;
   final AlertKind kind;
+  final bool isRead;
 
   const AlertItem({
     required this.id,
@@ -13,6 +14,7 @@ class AlertItem {
     required this.createdAt,
     required this.shipmentId,
     required this.kind,
+    required this.isRead,
   });
 }
 

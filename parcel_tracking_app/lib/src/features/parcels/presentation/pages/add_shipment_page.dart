@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+
+import '../../../../core/app_scope.dart';
 import '../../data/firestore_shipments_repository.dart';
 import '../../domain/shipment.dart';
 
@@ -17,8 +19,6 @@ class _AddShipmentPageState extends State<AddShipmentPage> {
   ShipmentStatus _status = ShipmentStatus.pending;
   bool _loading = false;
 
-  final _repository = FirestoreShipmentsRepository();
-
   @override
   void dispose() {
     _trackingNumberController.dispose();
@@ -29,18 +29,20 @@ class _AddShipmentPageState extends State<AddShipmentPage> {
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
 
+    final ShipmentsRepository repository = AppScope.of(context).shipmentsRepository;
+
     setState(() => _loading = true);
 
     try {
-        final shipment = Shipment(
-          id: '', // Firestore will generate this
-          trackingNumber: _trackingNumberController.text.trim(),
-          shippedAt: DateTime.now(),
-          location: _locationController.text.trim(),
-          status: _status.value,
-        );
+      final shipment = Shipment(
+        id: '',
+        trackingNumber: _trackingNumberController.text.trim(),
+        shippedAt: DateTime.now(),
+        location: _locationController.text.trim(),
+        status: _status.value,
+      );
 
-      await _repository.addShipment(shipment);
+      await repository.addShipment(shipment);
       if (mounted) context.pop();
     } catch (e) {
       if (mounted) {
@@ -89,7 +91,7 @@ class _AddShipmentPageState extends State<AddShipmentPage> {
               ),
               const SizedBox(height: 20),
               DropdownButtonFormField<ShipmentStatus>(
-                value: _status,
+                initialValue: _status,
                 decoration: const InputDecoration(
                   labelText: 'Status',
                   border: OutlineInputBorder(),

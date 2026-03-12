@@ -1,6 +1,6 @@
 {
-    "name": "parcel_tracking_app",
-    "short_name": "parcel_tracking_app",
+    "name": "Trackrr",
+    "short_name": "Trackrr",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",

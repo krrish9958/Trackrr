@@ -1,0 +1,19 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "shipments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "isArchived",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "shippedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

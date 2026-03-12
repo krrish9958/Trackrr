@@ -1,12 +1,14 @@
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+
+import '../../../../core/app_scope.dart';
 
 class ProfilePage extends StatelessWidget {
   const ProfilePage({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final user = FirebaseAuth.instance.currentUser;
+    final auth = AppScope.of(context).auth;
+    final user = auth.currentUser;
 
     return Scaffold(
       appBar: AppBar(
@@ -40,7 +42,7 @@ class ProfilePage extends StatelessWidget {
                 onPressed: user == null
                     ? null
                     : () async {
-                        await FirebaseAuth.instance.signOut();
+                        await auth.signOut();
                         if (context.mounted) {
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(content: Text('Signed out successfully.')),

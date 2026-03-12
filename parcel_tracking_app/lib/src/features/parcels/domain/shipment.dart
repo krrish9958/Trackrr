@@ -34,6 +34,7 @@ class Shipment {
   final DateTime shippedAt;
   final String location;
   final String status;
+  final bool isArchived;
 
   const Shipment({
     required this.id,
@@ -41,6 +42,7 @@ class Shipment {
     required this.shippedAt,
     required this.location,
     required this.status,
+    this.isArchived = false,
   });
 
   ShipmentStatus get normalizedStatus => ShipmentStatus.fromRaw(status);

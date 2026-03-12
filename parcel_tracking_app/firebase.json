@@ -1,1 +1,29 @@
-{"flutter":{"platforms":{"android":{"default":{"projectId":"trackrr-acc27","appId":"1:893804085902:android:dfd50d56ed984513763fdf","fileOutput":"android/app/google-services.json"}},"dart":{"lib/firebase_options.dart":{"projectId":"trackrr-acc27","configurations":{"android":"1:893804085902:android:dfd50d56ed984513763fdf","ios":"1:893804085902:ios:43e5f374b9268a35763fdf","macos":"1:893804085902:ios:43e5f374b9268a35763fdf","web":"1:893804085902:web:574a809182e215e3763fdf","windows":"1:893804085902:web:1841c7b6fc02cee4763fdf"}}}}}}
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "trackrr-acc27",
+          "appId": "1:893804085902:android:dfd50d56ed984513763fdf",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "trackrr-acc27",
+          "configurations": {
+            "android": "1:893804085902:android:dfd50d56ed984513763fdf",
+            "ios": "1:893804085902:ios:43e5f374b9268a35763fdf",
+            "macos": "1:893804085902:ios:43e5f374b9268a35763fdf",
+            "web": "1:893804085902:web:574a809182e215e3763fdf",
+            "windows": "1:893804085902:web:1841c7b6fc02cee4763fdf"
+          }
+        }
+      }
+    }
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  }
+}

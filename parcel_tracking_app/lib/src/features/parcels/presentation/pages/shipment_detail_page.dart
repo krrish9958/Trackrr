@@ -2,18 +2,156 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
+import '../../../../core/app_scope.dart';
 import '../../data/firestore_shipments_repository.dart';
 import '../../domain/shipment.dart';
 import '../../domain/shipment_event.dart';
 
-class ShipmentDetailPage extends StatelessWidget {
+class ShipmentDetailPage extends StatefulWidget {
   final String shipmentId;
 
   const ShipmentDetailPage({super.key, required this.shipmentId});
 
   @override
+  State<ShipmentDetailPage> createState() => _ShipmentDetailPageState();
+}
+
+class _ShipmentDetailPageState extends State<ShipmentDetailPage> {
+  bool _isArchiving = false;
+  bool _isRestoring = false;
+  bool _isAddingEvent = false;
+
+  Future<void> _archiveShipment() async {
+    final shouldArchive = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Archive shipment?'),
+          content: const Text(
+            'This will hide the shipment from active views while keeping its timeline.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Archive'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (shouldArchive != true || !mounted) {
+      return;
+    }
+
+    setState(() => _isArchiving = true);
+    final ShipmentsRepository repository = AppScope.of(context).shipmentsRepository;
+
+    try {
+      await repository.archiveShipment(widget.shipmentId);
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() => _isArchiving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Shipment archived.')),
+      );
+      context.go('/shipments');
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to archive shipment: $e')),
+      );
+      setState(() => _isArchiving = false);
+    }
+  }
+
+  Future<void> _showAddEventSheet(Shipment shipment) async {
+    final result = await showModalBottomSheet<_ShipmentEventDraft>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => _AddShipmentEventSheet(shipment: shipment),
+    );
+
+    if (result == null || !mounted) {
+      return;
+    }
+
+    setState(() => _isAddingEvent = true);
+    final ShipmentsRepository repository = AppScope.of(context).shipmentsRepository;
+
+    try {
+      await repository.addShipmentEvent(
+        shipment: shipment,
+        status: result.status,
+        title: result.title,
+        description: result.description,
+        location: result.location,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Tracking event added.')),
+      );
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to add event: $e')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isAddingEvent = false);
+      }
+    }
+  }
+
+  Future<void> _restoreShipment() async {
+    setState(() => _isRestoring = true);
+    final ShipmentsRepository repository = AppScope.of(context).shipmentsRepository;
+
+    try {
+      await repository.restoreShipment(widget.shipmentId);
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() => _isRestoring = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Shipment restored.')),
+      );
+      context.go('/shipments');
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to restore shipment: $e')),
+      );
+      setState(() => _isRestoring = false);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final repository = FirestoreShipmentsRepository();
+    final ShipmentsRepository repository = AppScope.of(context).shipmentsRepository;
 
     return Scaffold(
       backgroundColor: const Color(0xFFF5F5F7),
@@ -32,46 +170,72 @@ class ShipmentDetailPage extends StatelessWidget {
         actions: [
           IconButton(
             icon: const Icon(Icons.edit_outlined),
-            onPressed: () => context.push('/shipments/$shipmentId/edit'),
+            onPressed: _isArchiving || _isRestoring
+                ? null
+                : () => context.push('/shipments/${widget.shipmentId}/edit'),
           ),
+          (_isArchiving || _isRestoring)
+              ? const Padding(
+                  padding: EdgeInsets.only(right: 16),
+                  child: Center(
+                    child: SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  ),
+                )
+              : IconButton(
+                  icon: const Icon(Icons.archive_outlined),
+                  onPressed: _archiveShipment,
+                ),
         ],
       ),
       body: StreamBuilder<Shipment?>(
-        stream: repository.watchShipment(shipmentId),
+        stream: repository.watchShipment(widget.shipmentId),
         builder: (context, shipmentSnapshot) {
           if (shipmentSnapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
+            return const _DetailLoadingState();
           }
           if (shipmentSnapshot.hasError) {
-            return Center(
-              child: Text(
-                'Failed to load shipment.',
-                style: Theme.of(context).textTheme.bodyMedium,
+            return _DetailMessageState(
+              message: 'Failed to load shipment.',
+              child: Center(
+                child: Text(
+                  'Failed to load shipment.',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
               ),
             );
           }
 
           final shipment = shipmentSnapshot.data;
           if (shipment == null) {
-            return Center(
-              child: Text(
-                'Shipment not found.',
-                style: Theme.of(context).textTheme.bodyMedium,
+            return _DetailMessageState(
+              message: 'Shipment not found.',
+              child: Center(
+                child: Text(
+                  'Shipment not found.',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
               ),
             );
           }
 
           return StreamBuilder<List<ShipmentEvent>>(
-            stream: repository.watchShipmentEvents(shipmentId),
+            stream: repository.watchShipmentEvents(widget.shipmentId),
             builder: (context, eventsSnapshot) {
               if (eventsSnapshot.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator());
+                return _DetailLoadingState(shipment: shipment);
               }
               if (eventsSnapshot.hasError) {
-                return Center(
-                  child: Text(
-                    'Failed to load shipment history.',
-                    style: Theme.of(context).textTheme.bodyMedium,
+                return _DetailMessageState(
+                  message: 'Failed to load shipment history.',
+                  child: Center(
+                    child: Text(
+                      'Failed to load shipment history.',
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
                   ),
                 );
               }
@@ -81,9 +245,43 @@ class ShipmentDetailPage extends StatelessWidget {
               final shippedAtLabel = DateFormat('dd MMM yyyy, HH:mm').format(shipment.shippedAt);
               final progressValue = _progressValueFor(shipment.normalizedStatus);
 
-              return ListView(
-                padding: const EdgeInsets.all(16),
-                children: [
+              return AnimatedSwitcher(
+                duration: const Duration(milliseconds: 220),
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeInCubic,
+                child: ListView(
+                  key: ValueKey('${shipment.id}-${events.length}-${shipment.isArchived}'),
+                  padding: const EdgeInsets.all(16),
+                  children: [
+                  if (shipment.isArchived) ...[
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF3F4F6),
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: const Color(0xFFD1D5DB)),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.archive_outlined, color: Color(0xFF6B7280)),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              'This shipment is archived and hidden from active views.',
+                              style: Theme.of(context).textTheme.bodyMedium,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          FilledButton.tonal(
+                            onPressed: _isRestoring ? null : _restoreShipment,
+                            child: const Text('Restore'),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
                   _StatusSummaryCard(
                     trackingNumber: shipment.trackingNumber,
                     statusLabel: shipment.normalizedStatus.label,
@@ -107,11 +305,36 @@ class ShipmentDetailPage extends StatelessWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            'Tracking Timeline',
-                            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                              fontWeight: FontWeight.w700,
-                            ),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  'Tracking Timeline',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .titleMedium
+                                      ?.copyWith(fontWeight: FontWeight.w700),
+                                ),
+                              ),
+                              FilledButton.icon(
+                                onPressed: shipment.isArchived || _isArchiving || _isRestoring || _isAddingEvent
+                                    ? null
+                                    : () => _showAddEventSheet(shipment),
+                                icon: _isAddingEvent
+                                    ? const SizedBox(
+                                        width: 16,
+                                        height: 16,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: Colors.white,
+                                        ),
+                                      )
+                                    : const Icon(Icons.add),
+                                label: Text(
+                                  _isAddingEvent ? 'Saving...' : 'Add Event',
+                                ),
+                              ),
+                            ],
                           ),
                           const SizedBox(height: 16),
                           if (events.isEmpty)
@@ -169,11 +392,265 @@ class ShipmentDetailPage extends StatelessWidget {
                       ),
                     ),
                   ),
-                ],
+                  ],
+                ),
               );
             },
           );
         },
+      ),
+    );
+  }
+}
+
+class _ShipmentEventDraft {
+  const _ShipmentEventDraft({
+    required this.status,
+    required this.title,
+    required this.description,
+    required this.location,
+  });
+
+  final ShipmentStatus status;
+  final String title;
+  final String description;
+  final String location;
+}
+
+class _DetailLoadingState extends StatelessWidget {
+  const _DetailLoadingState({this.shipment});
+
+  final Shipment? shipment;
+
+  @override
+  Widget build(BuildContext context) {
+    final status = shipment?.normalizedStatus ?? ShipmentStatus.pending;
+
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        _StatusSummaryCard(
+          trackingNumber: shipment?.trackingNumber ?? 'Loading...',
+          statusLabel: status.label,
+          statusColor: _statusColorFor(status),
+          progressValue: shipment == null ? 0.2 : _progressValueFor(status),
+          location: shipment?.location ?? 'Fetching latest shipment details',
+          shippedAtLabel: shipment == null
+              ? 'Syncing shipment timeline'
+              : DateFormat('dd MMM yyyy, HH:mm').format(shipment!.shippedAt),
+        ),
+        const SizedBox(height: 16),
+        const Card(
+          child: Padding(
+            padding: EdgeInsets.all(24),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Text('Loading shipment timeline...'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _DetailMessageState extends StatelessWidget {
+  const _DetailMessageState({
+    required this.message,
+    required this.child,
+  });
+
+  final String message;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 180),
+      child: KeyedSubtree(
+        key: ValueKey(message),
+        child: child,
+      ),
+    );
+  }
+}
+
+class _AddShipmentEventSheet extends StatefulWidget {
+  const _AddShipmentEventSheet({required this.shipment});
+
+  final Shipment shipment;
+
+  @override
+  State<_AddShipmentEventSheet> createState() => _AddShipmentEventSheetState();
+}
+
+class _AddShipmentEventSheetState extends State<_AddShipmentEventSheet> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _titleController;
+  late final TextEditingController _descriptionController;
+  late final TextEditingController _locationController;
+  late ShipmentStatus _status;
+
+  @override
+  void initState() {
+    super.initState();
+    _status = widget.shipment.normalizedStatus.isKnown
+        ? widget.shipment.normalizedStatus
+        : ShipmentStatus.pending;
+    _locationController = TextEditingController(text: widget.shipment.location);
+    _titleController = TextEditingController(
+      text: _defaultTitleFor(_status),
+    );
+    _descriptionController = TextEditingController(
+      text: _defaultDescriptionFor(_status, widget.shipment.location),
+    );
+  }
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _descriptionController.dispose();
+    _locationController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+
+    return Padding(
+      padding: EdgeInsets.fromLTRB(16, 16, 16, bottomInset + 16),
+      child: Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(28),
+        child: SafeArea(
+          top: false,
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(20),
+            child: Form(
+              key: _formKey,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Add Tracking Event',
+                          style: Theme.of(context)
+                              .textTheme
+                              .titleLarge
+                              ?.copyWith(fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        icon: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
+                  Text(
+                    'This updates the shipment timeline and current status.',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                  const SizedBox(height: 20),
+                  DropdownButtonFormField<ShipmentStatus>(
+                    initialValue: _status,
+                    decoration: const InputDecoration(
+                      labelText: 'Status',
+                    ),
+                    items: ShipmentStatus.values
+                        .where((status) => status != ShipmentStatus.unknown)
+                        .map(
+                          (status) => DropdownMenuItem(
+                            value: status,
+                            child: Text(status.label),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (value) {
+                      if (value == null) return;
+                      setState(() {
+                        _status = value;
+                        _titleController.text = _defaultTitleFor(value);
+                        _descriptionController.text = _defaultDescriptionFor(
+                          value,
+                          _locationController.text.trim(),
+                        );
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                  TextFormField(
+                    controller: _titleController,
+                    decoration: const InputDecoration(labelText: 'Event title'),
+                    validator: (value) => value == null || value.trim().isEmpty
+                        ? 'Required'
+                        : null,
+                  ),
+                  const SizedBox(height: 16),
+                  TextFormField(
+                    controller: _descriptionController,
+                    maxLines: 3,
+                    decoration: const InputDecoration(
+                      labelText: 'Description',
+                      alignLabelWithHint: true,
+                    ),
+                    validator: (value) => value == null || value.trim().isEmpty
+                        ? 'Required'
+                        : null,
+                  ),
+                  const SizedBox(height: 16),
+                  TextFormField(
+                    controller: _locationController,
+                    decoration: const InputDecoration(labelText: 'Location'),
+                    onChanged: (value) {
+                      if (_descriptionController.text.isEmpty) {
+                        return;
+                      }
+                    },
+                    validator: (value) => value == null || value.trim().isEmpty
+                        ? 'Required'
+                        : null,
+                  ),
+                  const SizedBox(height: 24),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      onPressed: _submit,
+                      child: const Text('Save Event'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _submit() {
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+
+    Navigator.of(context).pop(
+      _ShipmentEventDraft(
+        status: _status,
+        title: _titleController.text.trim(),
+        description: _descriptionController.text.trim(),
+        location: _locationController.text.trim(),
       ),
     );
   }
@@ -216,7 +693,7 @@ class _StatusSummaryCard extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.12),
+                  color: Colors.white.withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(16),
                 ),
                 child: const Icon(
@@ -250,7 +727,7 @@ class _StatusSummaryCard extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 decoration: BoxDecoration(
-                  color: statusColor.withOpacity(0.18),
+                  color: statusColor.withValues(alpha: 0.18),
                   borderRadius: BorderRadius.circular(999),
                 ),
                 child: Text(
@@ -268,7 +745,7 @@ class _StatusSummaryCard extends StatelessWidget {
             value: progressValue,
             minHeight: 8,
             color: statusColor,
-            backgroundColor: Colors.white.withOpacity(0.12),
+            backgroundColor: Colors.white.withValues(alpha: 0.12),
             borderRadius: BorderRadius.circular(999),
           ),
           const SizedBox(height: 16),
@@ -364,7 +841,7 @@ class _CurrentCheckpointCard extends StatelessWidget {
             Container(
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: statusColor.withOpacity(0.12),
+                color: statusColor.withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(16),
               ),
               child: Icon(Icons.route_outlined, color: statusColor),
@@ -438,7 +915,7 @@ class _TimelineTile extends StatelessWidget {
                   width: 2,
                   height: 48,
                   margin: const EdgeInsets.symmetric(vertical: 6),
-                  color: accentColor.withOpacity(0.3),
+                   color: accentColor.withValues(alpha: 0.3),
                 ),
             ],
           ),
@@ -528,5 +1005,31 @@ Color _statusColorFor(ShipmentStatus status) {
     ShipmentStatus.pending => const Color(0xFF6B7280),
     ShipmentStatus.failed => const Color(0xFFDC2626),
     ShipmentStatus.unknown => const Color(0xFF2563EB),
+  };
+}
+
+String _defaultTitleFor(ShipmentStatus status) {
+  return switch (status) {
+    ShipmentStatus.pending => 'Awaiting next checkpoint',
+    ShipmentStatus.inDelivery => 'Package is in transit',
+    ShipmentStatus.complete => 'Package delivered',
+    ShipmentStatus.failed => 'Delivery issue reported',
+    ShipmentStatus.unknown => 'Shipment updated',
+  };
+}
+
+String _defaultDescriptionFor(ShipmentStatus status, String location) {
+  final normalizedLocation = location.trim().isEmpty ? 'the current facility' : location.trim();
+
+  return switch (status) {
+    ShipmentStatus.pending =>
+      'Shipment is registered and awaiting the next scan at $normalizedLocation.',
+    ShipmentStatus.inDelivery =>
+      'Shipment is moving through the network near $normalizedLocation.',
+    ShipmentStatus.complete =>
+      'Shipment was delivered successfully in $normalizedLocation.',
+    ShipmentStatus.failed =>
+      'A delivery problem was reported near $normalizedLocation.',
+    ShipmentStatus.unknown => 'Shipment details were updated.',
   };
 }
